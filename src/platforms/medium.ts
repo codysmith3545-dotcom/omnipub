@@ -14,6 +14,9 @@ export class MediumPlatform implements Platform {
     const resp = await fetch("https://api.medium.com/v1/me", {
       headers: { Authorization: `Bearer ${this.getToken()}` },
     });
+    if (!resp.ok) {
+      throw new Error(`Medium /me failed (${resp.status}): ${await resp.text()}`);
+    }
     const data = (await resp.json()) as { data: { id: string } };
     return data.data.id;
   }

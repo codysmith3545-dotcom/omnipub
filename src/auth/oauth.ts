@@ -1,7 +1,7 @@
 import { saveCredentials } from "./store.js";
 
 export async function setupLinkedInOAuth(clientId: string, clientSecret: string): Promise<string> {
-  const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=http://localhost:3847/callback&scope=w_member_social%20r_liteprofile`;
+  const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=http://localhost:3847/callback&scope=openid%20profile%20w_member_social`;
   return authUrl;
 }
 
@@ -21,6 +21,9 @@ export async function exchangeLinkedInCode(
       client_secret: clientSecret,
     }),
   });
+  if (!resp.ok) {
+    throw new Error(`LinkedIn token exchange failed (${resp.status}): ${await resp.text()}`);
+  }
   const data = (await resp.json()) as { access_token: string; expires_in: number };
   saveCredentials("linkedin", {
     type: "oauth",

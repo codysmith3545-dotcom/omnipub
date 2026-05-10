@@ -3,7 +3,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { parse as parseToml } from "toml";
 
-export interface OmnipubConfig {
+export type OmnipubConfig = {
   platforms: {
     x?: { enabled: boolean };
     linkedin?: { enabled: boolean; clientId?: string };
@@ -14,7 +14,7 @@ export interface OmnipubConfig {
     dryRun: boolean;
     agent: boolean;
   };
-}
+};
 
 const CONFIG_DIR = join(homedir(), ".config", "omnipub");
 const CONFIG_PATH = join(CONFIG_DIR, "config.toml");
@@ -41,7 +41,11 @@ export function loadConfig(): OmnipubConfig {
     return DEFAULT_CONFIG;
   }
   const raw = readFileSync(CONFIG_PATH, "utf-8");
-  return { ...DEFAULT_CONFIG, ...parseToml(raw) } as OmnipubConfig;
+  const parsed = parseToml(raw) as Record<string, unknown>;
+  return {
+    platforms: { ...DEFAULT_CONFIG.platforms, ...(parsed["platforms"] as Record<string, unknown> ?? {}) },
+    defaults: { ...DEFAULT_CONFIG.defaults, ...(parsed["defaults"] as Record<string, unknown> ?? {}) },
+  } as OmnipubConfig;
 }
 
 export function initConfig(): string {

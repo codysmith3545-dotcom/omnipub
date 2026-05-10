@@ -1,6 +1,9 @@
 import type { Platform, Article, PublishResult, DryRunResult, PublishOpts, HealthStatus, ErrorClass } from "./base.js";
 import { getCredentials } from "../auth/store.js";
 
+type LinkedInUserInfo = { sub: string };
+type LinkedInPostResponse = { id: string };
+
 export class LinkedInPlatform implements Platform {
   name = "linkedin";
 
@@ -14,7 +17,10 @@ export class LinkedInPlatform implements Platform {
     const resp = await fetch("https://api.linkedin.com/v2/userinfo", {
       headers: { Authorization: `Bearer ${this.getToken()}` },
     });
-    const data = (await resp.json()) as { sub: string };
+    if (!resp.ok) {
+      throw new Error(`LinkedIn userinfo failed (${resp.status}): ${await resp.text()}`);
+    }
+    const data = (await resp.json()) as LinkedInUserInfo;
     return `urn:li:person:${data.sub}`;
   }
 
@@ -27,16 +33,22 @@ export class LinkedInPlatform implements Platform {
         lifecycleState: "PUBLISHED",
         specificContent: {
           "com.linkedin.ugc.ShareContent": {
-            shareCommentary: { text: article.summary ?? article.title },
-            shareMediaCategory: "ARTICLE",
-            media: [
-              {
-                status: "READY",
-                originalUrl: article.canonical ?? "",
-                title: { text: article.title },
-                description: { text: article.summary ?? "" },
-              },
-            ],
+            shareCommentary: {
+              text: `${article.title}\n\n${article.body}`,
+            },
+            shareMediaCategory: article.canonical ? "ARTICLE" as const : "NONE" as const,
+            ...(article.canonical
+              ? {
+                  media: [
+                    {
+                      status: "READY",
+                      originalUrl: article.canonical,
+                      title: { text: article.title },
+                      description: { text: article.summary ?? "" },
+                    },
+                  ],
+                }
+              : {}),
           },
         },
         visibility: { "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC" },
@@ -53,11 +65,10 @@ export class LinkedInPlatform implements Platform {
       });
 
       if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(`LinkedIn API error (${resp.status}): ${text}`);
+        throw new Error(`LinkedIn API error (${resp.status}): ${await resp.text()}`);
       }
 
-      const data = (await resp.json()) as { id: string };
+      const data = (await resp.json()) as LinkedInPostResponse;
       return {
         platform: this.name,
         success: true,
@@ -78,6 +89,7 @@ export class LinkedInPlatform implements Platform {
       wouldPublish: true,
       payload: {
         title: article.title,
+        bodyLength: article.body.length,
         summary: article.summary,
         tags: article.tags,
         hasCanonical: !!article.canonical,

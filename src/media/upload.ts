@@ -1,14 +1,14 @@
 import { readFileSync, existsSync } from "fs";
-import { extname } from "path";
+import { extname, basename } from "path";
 
-export interface MediaFile {
-  path: string;
-  buffer: Buffer;
-  mimeType: string;
-  filename: string;
-}
+export type MediaFile = {
+  readonly path: string;
+  readonly buffer: Buffer;
+  readonly mimeType: string;
+  readonly filename: string;
+};
 
-const MIME_MAP: Record<string, string> = {
+const MIME_MAP: Readonly<Record<string, string>> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -29,6 +29,6 @@ export function loadMedia(filePath: string): MediaFile {
     path: filePath,
     buffer: readFileSync(filePath),
     mimeType,
-    filename: filePath.split("/").pop()!,
+    filename: basename(filePath),
   };
 }

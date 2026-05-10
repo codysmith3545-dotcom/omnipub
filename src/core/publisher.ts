@@ -7,21 +7,31 @@ import { refreshXCookies, refreshSubstackCookies } from "../auth/cookie-refresh.
 import { refreshHashes } from "../healing/x-hash-refresh.js";
 import { loadConfig } from "./config.js";
 
-const ALL_PLATFORMS: Record<string, () => Platform> = {
+const VALID_PLATFORMS = ["x", "linkedin", "medium", "substack"] as const;
+type PlatformName = (typeof VALID_PLATFORMS)[number];
+
+const PLATFORM_FACTORIES: Record<PlatformName, () => Platform> = {
   x: () => new XArticlesPlatform(),
   linkedin: () => new LinkedInPlatform(),
   medium: () => new MediumPlatform(),
   substack: () => new SubstackPlatform(),
 };
 
-function resolvePlatforms(article: Article, only?: string[], exclude?: string[]): Platform[] {
+function isValidPlatform(name: string): name is PlatformName {
+  return (VALID_PLATFORMS as readonly string[]).includes(name);
+}
+
+function resolvePlatforms(article: Article, only?: readonly string[], exclude?: readonly string[]): Platform[] {
   const config = loadConfig();
-  let names = Object.keys(ALL_PLATFORMS);
+  let names: string[] = [...VALID_PLATFORMS];
 
   if (article.platforms && article.platforms.length > 0) {
     names = names.filter((n) => article.platforms!.includes(n));
   }
   if (only && only.length > 0) {
+    for (const o of only) {
+      if (!isValidPlatform(o)) throw new Error(`Unknown platform: ${o}. Valid: ${VALID_PLATFORMS.join(", ")}`);
+    }
     names = names.filter((n) => only.includes(n));
   }
   if (exclude && exclude.length > 0) {
@@ -33,7 +43,7 @@ function resolvePlatforms(article: Article, only?: string[], exclude?: string[])
     return platformConfig?.enabled !== false;
   });
 
-  return names.map((n) => ALL_PLATFORMS[n]!());
+  return names.map((n) => PLATFORM_FACTORIES[n as PlatformName]());
 }
 
 async function heal(platform: Platform, error: unknown): Promise<boolean> {
@@ -46,6 +56,7 @@ async function heal(platform: Platform, error: unknown): Promise<boolean> {
     case "hash_stale":
       if (platform.name === "x") {
         await refreshHashes();
+        (platform as XArticlesPlatform).invalidateHashes();
         return true;
       }
       return false;
@@ -59,57 +70,59 @@ async function heal(platform: Platform, error: unknown): Promise<boolean> {
 
 export async function publish(
   article: Article,
-  opts: PublishOpts & { only?: string[]; exclude?: string[] }
+  opts: PublishOpts & { only?: readonly string[]; exclude?: readonly string[] }
 ): Promise<PublishResult[]> {
   const platforms = resolvePlatforms(article, opts.only, opts.exclude);
 
+  if (platforms.length === 0) {
+    return [{ platform: "none", success: false, error: "No platforms matched filters" }];
+  }
+
   if (opts.dryRun) {
-    const results = await Promise.all(
+    return Promise.all(
       platforms.map(async (p) => {
         const dr = await p.dryRun(article);
         return {
           platform: p.name,
           success: true,
-          url: undefined,
-          error: undefined,
-          healed: false,
           dryRun: dr,
-        } as PublishResult & { dryRun: unknown };
+        } satisfies PublishResult & { dryRun: unknown };
       })
     );
-    return results;
   }
 
   const results = await Promise.allSettled(
     platforms.map(async (p): Promise<PublishResult> => {
-      let result = await p.publish(article, opts);
+      try {
+        const result = await p.publish(article, opts);
 
-      if (!result.success) {
-        const healed = await heal(p, new Error(result.error));
-        if (healed) {
-          result = await p.publish(article, opts);
-          result.healed = true;
+        if (!result.success) {
+          const healed = await heal(p, new Error(result.error));
+          if (healed) {
+            const retry = await p.publish(article, opts);
+            retry.healed = true;
+            return retry;
+          }
         }
-      }
 
-      return result;
+        return result;
+      } catch (error) {
+        return { platform: p.name, success: false, error: error instanceof Error ? error.message : String(error) };
+      }
     })
   );
 
-  return results.map((r) =>
+  return results.map((r, i) =>
     r.status === "fulfilled"
       ? r.value
-      : { platform: "unknown", success: false, error: String(r.reason) }
+      : { platform: platforms[i]?.name ?? "unknown", success: false, error: String(r.reason) }
   );
 }
 
-export async function doctor(platformName?: string): Promise<Record<string, unknown>[]> {
-  const names = platformName ? [platformName] : Object.keys(ALL_PLATFORMS);
-  const results = await Promise.all(
-    names.map(async (n) => {
-      const p = ALL_PLATFORMS[n]!();
-      return p.healthCheck();
-    })
-  );
-  return results;
+export async function doctor(platformName?: string): Promise<HealthStatus[]> {
+  if (platformName && !isValidPlatform(platformName)) {
+    throw new Error(`Unknown platform: ${platformName}. Valid: ${VALID_PLATFORMS.join(", ")}`);
+  }
+  const names = platformName ? [platformName] : [...VALID_PLATFORMS];
+  return Promise.all(names.map((n) => PLATFORM_FACTORIES[n as PlatformName]().healthCheck()));
 }

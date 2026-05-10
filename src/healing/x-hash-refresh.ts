@@ -5,7 +5,7 @@ import { getConfigDir } from "../core/config.js";
 
 const OPS_PATH = join(getConfigDir(), "x-ops.json");
 
-export interface XOperationHashes {
+export type XOperationHashes = {
   ArticleEntityDraftCreate: string;
   ArticleEntityDelete: string;
   ArticleEntitiesSlice: string;
@@ -15,7 +15,7 @@ export interface XOperationHashes {
   ArticleEntityUpdateCoverMedia: string;
   ArticleEntityUpdateTitle: string;
   refreshedAt: string;
-}
+};
 
 const OPERATION_NAMES = [
   "ArticleEntityDraftCreate",
@@ -26,11 +26,15 @@ const OPERATION_NAMES = [
   "ArticleEntityUpdateContent",
   "ArticleEntityUpdateCoverMedia",
   "ArticleEntityUpdateTitle",
-];
+] as const;
 
 export function loadHashes(): XOperationHashes | null {
   if (!existsSync(OPS_PATH)) return null;
-  return JSON.parse(readFileSync(OPS_PATH, "utf-8"));
+  const raw = readFileSync(OPS_PATH, "utf-8").trim();
+  if (!raw) return null;
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null || !("refreshedAt" in parsed)) return null;
+  return parsed as XOperationHashes;
 }
 
 export function saveHashes(hashes: XOperationHashes): void {
@@ -51,8 +55,8 @@ export async function refreshHashes(): Promise<XOperationHashes> {
       const match = url.match(/\/i\/api\/graphql\/([^/]+)\/(\w+)/);
       if (match) {
         const [, hash, opName] = match;
-        if (OPERATION_NAMES.includes(opName!)) {
-          captured.set(opName!, hash!);
+        if (hash && opName && (OPERATION_NAMES as readonly string[]).includes(opName)) {
+          captured.set(opName, hash);
         }
       }
     });
@@ -60,7 +64,6 @@ export async function refreshHashes(): Promise<XOperationHashes> {
     await page.goto("https://x.com/i/articles", { waitUntil: "networkidle" });
     await page.waitForTimeout(5000);
 
-    // Try creating a draft to trigger more operations
     try {
       await page.click('[data-testid="new-article-button"]', { timeout: 3000 });
       await page.waitForTimeout(3000);
@@ -74,7 +77,7 @@ export async function refreshHashes(): Promise<XOperationHashes> {
       if (hash) hashes[op] = hash;
     }
 
-    const result = {
+    const result: XOperationHashes = {
       ...hashes,
       refreshedAt: new Date().toISOString(),
     } as XOperationHashes;

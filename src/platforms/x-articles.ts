@@ -4,14 +4,27 @@ import { refreshXCookies } from "../auth/cookie-refresh.js";
 import { loadHashes, refreshHashes, isStaleError, type XOperationHashes } from "../healing/x-hash-refresh.js";
 import { loadMedia } from "../media/upload.js";
 
+type GraphQLResponse = {
+  data?: Record<string, unknown>;
+  errors?: Array<{ message: string }>;
+};
+
+type MediaInitResponse = {
+  media_id_string: string;
+};
+
 export class XArticlesPlatform implements Platform {
   name = "x";
   private hashes: XOperationHashes | null = null;
 
+  invalidateHashes(): void {
+    this.hashes = null;
+  }
+
   private getCookies(): Record<string, string> {
     const creds = getCredentials("x");
     if (!creds) throw new Error("X cookies not configured. Run: omnipub auth setup x");
-    const cookies = JSON.parse(creds.value) as Array<{ name: string; value: string }>;
+    const cookies = JSON.parse(creds.value) as ReadonlyArray<{ name: string; value: string }>;
     return Object.fromEntries(cookies.map((c) => [c.name, c.value]));
   }
 
@@ -27,7 +40,7 @@ export class XArticlesPlatform implements Platform {
     };
   }
 
-  private async graphql(opName: keyof Omit<XOperationHashes, "refreshedAt">, variables: unknown): Promise<unknown> {
+  private async graphql(opName: keyof Omit<XOperationHashes, "refreshedAt">, variables: unknown): Promise<GraphQLResponse> {
     if (!this.hashes) {
       this.hashes = loadHashes();
       if (!this.hashes) {
@@ -40,21 +53,52 @@ export class XArticlesPlatform implements Platform {
     const resp = await fetch(`https://x.com/i/api/graphql/${hash}/${opName}`, {
       method: "POST",
       headers: this.getHeaders(),
-      body: JSON.stringify({ variables, queryId: hash }),
+      body: JSON.stringify({
+        variables,
+        queryId: hash,
+        features: {
+          articles_preview_enabled: true,
+          c9s_tweet_anatomy_moderator_badge_enabled: true,
+          creator_subscriptions_tweet_preview_api_enabled: true,
+          freedom_of_speech_not_reach_fetch_enabled: true,
+          longform_notetweets_consumption_enabled: true,
+          longform_notetweets_inline_media_enabled: true,
+          longform_notetweets_rich_text_read_enabled: true,
+          responsive_web_edit_tweet_api_enabled: true,
+          responsive_web_enhance_cards_enabled: false,
+          responsive_web_graphql_exclude_directive_enabled: true,
+          responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+          responsive_web_graphql_timeline_navigation_enabled: true,
+          responsive_web_media_download_video_enabled: false,
+          responsive_web_twitter_article_tweet_consumption_enabled: true,
+          rweb_tipjar_consumption_enabled: true,
+          standardized_nudges_misinfo: true,
+          tweet_awards_web_tipping_enabled: false,
+          tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+          tweetypie_unmention_optimization_enabled: true,
+          verified_phone_label_enabled: false,
+          view_counts_everywhere_api_enabled: true,
+        },
+      }),
     });
 
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(`X GraphQL ${opName} failed (${resp.status}): ${text}`);
     }
-    return resp.json();
+
+    const body = (await resp.json()) as GraphQLResponse;
+    if (body.errors && body.errors.length > 0) {
+      throw new Error(`X GraphQL ${opName} returned errors: ${body.errors.map((e) => e.message).join(", ")}`);
+    }
+    return body;
   }
 
-  async publish(article: Article, opts: PublishOpts): Promise<PublishResult> {
+  async publish(article: Article, _opts: PublishOpts): Promise<PublishResult> {
     try {
-      const draft = (await this.graphql("ArticleEntityDraftCreate", {})) as any;
-      const articleId = draft?.data?.article_entity_draft_create?.id;
-      if (!articleId) throw new Error("Failed to create draft");
+      const draft = await this.graphql("ArticleEntityDraftCreate", {});
+      const articleId = (draft.data?.["article_entity_draft_create"] as Record<string, unknown> | undefined)?.["id"] as string | undefined;
+      if (!articleId) throw new Error("Failed to create draft — no article ID returned");
 
       await this.graphql("ArticleEntityUpdateTitle", {
         article_id: articleId,
@@ -136,12 +180,39 @@ export class XArticlesPlatform implements Platform {
   }
 
   private markdownToContentState(markdown: string): object {
-    const blocks: Array<{ key: string; text: string; type: string; entityRanges: unknown[]; inlineStyleRanges: unknown[] }> = [];
+    type Block = { key: string; text: string; type: string; entityRanges: readonly unknown[]; inlineStyleRanges: ReadonlyArray<{ offset: number; length: number; style: string }> };
+    const blocks: Block[] = [];
     const lines = markdown.split("\n");
     let blockIndex = 0;
+    let inCodeBlock = false;
+    let codeLines: string[] = [];
 
     for (const line of lines) {
+      if (line.startsWith("```")) {
+        if (inCodeBlock) {
+          blocks.push({
+            key: `block-${blockIndex++}`,
+            text: codeLines.join("\n"),
+            type: "code-block",
+            entityRanges: [],
+            inlineStyleRanges: [],
+          });
+          codeLines = [];
+          inCodeBlock = false;
+        } else {
+          inCodeBlock = true;
+        }
+        continue;
+      }
+
+      if (inCodeBlock) {
+        codeLines.push(line);
+        continue;
+      }
+
       if (line.trim() === "") continue;
+
+      if (line.match(/^!\[.*\]\(.*\)$/)) continue;
 
       let type = "unstyled";
       let text = line;
@@ -158,51 +229,94 @@ export class XArticlesPlatform implements Platform {
       } else if (line.match(/^[-*] /)) {
         type = "unordered-list-item";
         text = line.slice(2);
-      } else if (line.match(/^\d+\. /)) {
+      } else if (line.match(/^\d+\.\s/)) {
         type = "ordered-list-item";
-        text = line.replace(/^\d+\. /, "");
+        text = line.replace(/^\d+\.\s/, "");
       }
+
+      const { stripped, styles } = this.stripAndExtractStyles(text);
 
       blocks.push({
         key: `block-${blockIndex++}`,
-        text,
+        text: stripped,
         type,
         entityRanges: [],
-        inlineStyleRanges: this.extractInlineStyles(text),
+        inlineStyleRanges: styles,
       });
     }
 
     return { blocks, entityMap: {} };
   }
 
-  private extractInlineStyles(text: string): Array<{ offset: number; length: number; style: string }> {
+  private stripAndExtractStyles(raw: string): { stripped: string; styles: Array<{ offset: number; length: number; style: string }> } {
     const styles: Array<{ offset: number; length: number; style: string }> = [];
+
+    type Span = { start: number; end: number; style: string };
+    const spans: Span[] = [];
     let match;
 
     const boldRegex = /\*\*(.+?)\*\*/g;
-    while ((match = boldRegex.exec(text)) !== null) {
-      styles.push({ offset: match.index, length: match[1]!.length + 4, style: "BOLD" });
+    while ((match = boldRegex.exec(raw)) !== null) {
+      spans.push({ start: match.index, end: match.index + match[0].length, style: "BOLD" });
     }
 
     const italicRegex = /(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g;
-    while ((match = italicRegex.exec(text)) !== null) {
-      styles.push({ offset: match.index, length: match[1]!.length + 2, style: "ITALIC" });
+    while ((match = italicRegex.exec(raw)) !== null) {
+      spans.push({ start: match.index, end: match.index + match[0].length, style: "ITALIC" });
     }
 
-    return styles;
+    if (spans.length === 0) return { stripped: raw, styles: [] };
+
+    spans.sort((a, b) => a.start - b.start);
+
+    let stripped = "";
+    let rawIdx = 0;
+    const offsetMap: number[] = [];
+
+    for (let i = 0; i < raw.length; i++) {
+      const inSpan = spans.find((s) => i >= s.start && i < s.end);
+      if (inSpan) {
+        const markerLen = inSpan.style === "BOLD" ? 2 : 1;
+        if (i < inSpan.start + markerLen || i >= inSpan.end - markerLen) {
+          offsetMap.push(-1);
+          continue;
+        }
+      }
+      offsetMap.push(stripped.length);
+      stripped += raw[i];
+      rawIdx++;
+    }
+
+    for (const span of spans) {
+      const markerLen = span.style === "BOLD" ? 2 : 1;
+      const contentStart = span.start + markerLen;
+      const contentEnd = span.end - markerLen;
+      const mappedStart = offsetMap[contentStart];
+      const mappedEnd = offsetMap[contentEnd - 1];
+      if (mappedStart !== undefined && mappedStart >= 0 && mappedEnd !== undefined && mappedEnd >= 0) {
+        styles.push({ offset: mappedStart, length: mappedEnd - mappedStart + 1, style: span.style });
+      }
+    }
+
+    return { stripped, styles };
   }
 
   private async uploadMedia(buffer: Buffer, mimeType: string): Promise<string> {
-    const initResp = await fetch("https://upload.x.com/i/media/upload.json", {
+    const headers = this.getHeaders();
+
+    const initResp = await fetch("https://upload.twitter.com/i/media/upload.json", {
       method: "POST",
-      headers: this.getHeaders(),
+      headers,
       body: JSON.stringify({
         command: "INIT",
         total_bytes: buffer.length,
         media_type: mimeType,
       }),
     });
-    const initData = (await initResp.json()) as { media_id_string: string };
+    if (!initResp.ok) {
+      throw new Error(`X media INIT failed (${initResp.status}): ${await initResp.text()}`);
+    }
+    const initData = (await initResp.json()) as MediaInitResponse;
 
     const form = new FormData();
     form.append("command", "APPEND");
@@ -210,23 +324,27 @@ export class XArticlesPlatform implements Platform {
     form.append("segment_index", "0");
     form.append("media", new Blob([buffer], { type: mimeType }));
 
-    await fetch("https://upload.x.com/i/media/upload.json", {
+    const { "content-type": _, ...headersWithoutContentType } = headers;
+    const appendResp = await fetch("https://upload.twitter.com/i/media/upload.json", {
       method: "POST",
-      headers: {
-        ...this.getHeaders(),
-        "content-type": undefined as any,
-      },
+      headers: headersWithoutContentType,
       body: form,
     });
+    if (!appendResp.ok) {
+      throw new Error(`X media APPEND failed (${appendResp.status}): ${await appendResp.text()}`);
+    }
 
-    await fetch("https://upload.x.com/i/media/upload.json", {
+    const finalResp = await fetch("https://upload.twitter.com/i/media/upload.json", {
       method: "POST",
-      headers: this.getHeaders(),
+      headers,
       body: JSON.stringify({
         command: "FINALIZE",
         media_id: initData.media_id_string,
       }),
     });
+    if (!finalResp.ok) {
+      throw new Error(`X media FINALIZE failed (${finalResp.status}): ${await finalResp.text()}`);
+    }
 
     return initData.media_id_string;
   }
