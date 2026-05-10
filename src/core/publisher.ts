@@ -1,4 +1,4 @@
-import type { Article, Platform, PublishResult, PublishOpts } from "../platforms/base.js";
+import type { Article, Platform, PublishResult, PublishOpts, HealthStatus } from "../platforms/base.js";
 import { XArticlesPlatform } from "../platforms/x-articles.js";
 import { LinkedInPlatform } from "../platforms/linkedin.js";
 import { MediumPlatform } from "../platforms/medium.js";
@@ -107,6 +107,16 @@ export async function publish(
 
         return result;
       } catch (error) {
+        const healed = await heal(p, error);
+        if (healed) {
+          try {
+            const retry = await p.publish(article, opts);
+            retry.healed = true;
+            return retry;
+          } catch (retryError) {
+            return { platform: p.name, success: false, error: retryError instanceof Error ? retryError.message : String(retryError) };
+          }
+        }
         return { platform: p.name, success: false, error: error instanceof Error ? error.message : String(error) };
       }
     })

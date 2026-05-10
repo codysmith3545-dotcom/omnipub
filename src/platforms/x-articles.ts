@@ -251,18 +251,32 @@ export class XArticlesPlatform implements Platform {
   private stripAndExtractStyles(raw: string): { stripped: string; styles: Array<{ offset: number; length: number; style: string }> } {
     const styles: Array<{ offset: number; length: number; style: string }> = [];
 
-    type Span = { start: number; end: number; style: string };
+    type Span = { start: number; end: number; markerLen: number; appliedStyles: readonly string[] };
     const spans: Span[] = [];
     let match;
+    const claimed = new Set<number>();
+
+    const boldItalicRegex = /\*\*\*(.+?)\*\*\*/g;
+    while ((match = boldItalicRegex.exec(raw)) !== null) {
+      const span = { start: match.index, end: match.index + match[0].length, markerLen: 3, appliedStyles: ["BOLD", "ITALIC"] as const };
+      spans.push(span);
+      for (let i = span.start; i < span.end; i++) claimed.add(i);
+    }
 
     const boldRegex = /\*\*(.+?)\*\*/g;
     while ((match = boldRegex.exec(raw)) !== null) {
-      spans.push({ start: match.index, end: match.index + match[0].length, style: "BOLD" });
+      if (claimed.has(match.index)) continue;
+      const span = { start: match.index, end: match.index + match[0].length, markerLen: 2, appliedStyles: ["BOLD"] as const };
+      spans.push(span);
+      for (let i = span.start; i < span.end; i++) claimed.add(i);
     }
 
     const italicRegex = /(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g;
     while ((match = italicRegex.exec(raw)) !== null) {
-      spans.push({ start: match.index, end: match.index + match[0].length, style: "ITALIC" });
+      if (claimed.has(match.index)) continue;
+      const span = { start: match.index, end: match.index + match[0].length, markerLen: 1, appliedStyles: ["ITALIC"] as const };
+      spans.push(span);
+      for (let i = span.start; i < span.end; i++) claimed.add(i);
     }
 
     if (spans.length === 0) return { stripped: raw, styles: [] };
@@ -270,31 +284,29 @@ export class XArticlesPlatform implements Platform {
     spans.sort((a, b) => a.start - b.start);
 
     let stripped = "";
-    let rawIdx = 0;
     const offsetMap: number[] = [];
 
     for (let i = 0; i < raw.length; i++) {
       const inSpan = spans.find((s) => i >= s.start && i < s.end);
       if (inSpan) {
-        const markerLen = inSpan.style === "BOLD" ? 2 : 1;
-        if (i < inSpan.start + markerLen || i >= inSpan.end - markerLen) {
+        if (i < inSpan.start + inSpan.markerLen || i >= inSpan.end - inSpan.markerLen) {
           offsetMap.push(-1);
           continue;
         }
       }
       offsetMap.push(stripped.length);
       stripped += raw[i];
-      rawIdx++;
     }
 
     for (const span of spans) {
-      const markerLen = span.style === "BOLD" ? 2 : 1;
-      const contentStart = span.start + markerLen;
-      const contentEnd = span.end - markerLen;
+      const contentStart = span.start + span.markerLen;
+      const contentEnd = span.end - span.markerLen;
       const mappedStart = offsetMap[contentStart];
       const mappedEnd = offsetMap[contentEnd - 1];
       if (mappedStart !== undefined && mappedStart >= 0 && mappedEnd !== undefined && mappedEnd >= 0) {
-        styles.push({ offset: mappedStart, length: mappedEnd - mappedStart + 1, style: span.style });
+        for (const style of span.appliedStyles) {
+          styles.push({ offset: mappedStart, length: mappedEnd - mappedStart + 1, style });
+        }
       }
     }
 

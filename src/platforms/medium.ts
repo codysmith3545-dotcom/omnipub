@@ -29,7 +29,7 @@ export class MediumPlatform implements Platform {
         title: article.title,
         contentFormat: "markdown",
         content: article.body,
-        tags: article.tags?.slice(0, 5) ?? [],
+        tags: (article.tags ?? []).slice(0, 5).map((t) => t.replace(/[^a-zA-Z0-9]/g, "").slice(0, 25)).filter(Boolean),
         canonicalUrl: article.canonical,
         publishStatus: "public",
       };

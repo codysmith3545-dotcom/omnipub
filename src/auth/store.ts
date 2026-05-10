@@ -19,7 +19,11 @@ export function getCredentials(platform: string): Credentials | null {
   if (!existsSync(path)) return null;
   const raw = readFileSync(path, "utf-8").trim();
   if (!raw) return null;
-  return JSON.parse(raw) as Credentials;
+  try {
+    return JSON.parse(raw) as Credentials;
+  } catch {
+    return null;
+  }
 }
 
 export function saveCredentials(platform: string, creds: Credentials): void {

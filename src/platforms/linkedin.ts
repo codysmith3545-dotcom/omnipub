@@ -34,7 +34,7 @@ export class LinkedInPlatform implements Platform {
         specificContent: {
           "com.linkedin.ugc.ShareContent": {
             shareCommentary: {
-              text: `${article.title}\n\n${article.body}`,
+              text: `${article.title}\n\n${article.body}`.slice(0, 3000),
             },
             shareMediaCategory: article.canonical ? "ARTICLE" as const : "NONE" as const,
             ...(article.canonical

@@ -71,17 +71,23 @@ export async function refreshHashes(): Promise<XOperationHashes> {
       // Button may not exist or be named differently
     }
 
-    const hashes: Record<string, string> = {};
+    const existing = loadHashes();
+    const merged: Record<string, string> = existing ? { ...existing } : {};
+    let newCount = 0;
     for (const op of OPERATION_NAMES) {
       const hash = captured.get(op);
-      if (hash) hashes[op] = hash;
+      if (hash) {
+        merged[op] = hash;
+        newCount++;
+      }
     }
 
-    const result: XOperationHashes = {
-      ...hashes,
-      refreshedAt: new Date().toISOString(),
-    } as XOperationHashes;
+    if (newCount === 0 && !existing) {
+      throw new Error("Hash refresh captured 0 operations — are you logged into X in Chrome?");
+    }
 
+    merged["refreshedAt"] = new Date().toISOString();
+    const result = merged as XOperationHashes;
     saveHashes(result);
     return result;
   } finally {
